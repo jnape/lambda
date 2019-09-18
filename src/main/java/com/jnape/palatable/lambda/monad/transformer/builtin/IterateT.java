@@ -1,12 +1,14 @@
 package com.jnape.palatable.lambda.monad.transformer.builtin;
 
 import com.jnape.palatable.lambda.adt.Maybe;
+import com.jnape.palatable.lambda.adt.Unit;
 import com.jnape.palatable.lambda.adt.hlist.Tuple2;
 import com.jnape.palatable.lambda.functions.Fn1;
 import com.jnape.palatable.lambda.functions.Fn2;
 import com.jnape.palatable.lambda.functions.recursion.RecursiveResult;
 import com.jnape.palatable.lambda.functions.specialized.Pure;
 import com.jnape.palatable.lambda.functor.builtin.Identity;
+import com.jnape.palatable.lambda.io.IO;
 import com.jnape.palatable.lambda.monad.Monad;
 import com.jnape.palatable.lambda.monad.MonadRec;
 import com.jnape.palatable.lambda.monad.transformer.MonadT;
@@ -22,6 +24,7 @@ import static com.jnape.palatable.lambda.functions.builtin.fn2.Into.into;
 import static com.jnape.palatable.lambda.functions.builtin.fn2.Tupler2.tupler;
 import static com.jnape.palatable.lambda.functions.recursion.RecursiveResult.recurse;
 import static com.jnape.palatable.lambda.functions.recursion.RecursiveResult.terminate;
+import static com.jnape.palatable.lambda.io.IO.io;
 
 public final class IterateT<M extends MonadRec<?, M>, A> implements MonadT<M, A, IterateT<M, ?>, IterateT<?, ?>> {
 
@@ -70,7 +73,7 @@ public final class IterateT<M extends MonadRec<?, M>, A> implements MonadT<M, A,
     @Override
     public <B> IterateT<M, B> flatMap(Fn1<? super A, ? extends Monad<B, IterateT<M, ?>>> f) {
         return trampolineM(a -> {
-            IterateT<M, B>                                coerce         = f.apply(a).coerce();
+            IterateT<M, B> coerce = f.apply(a).coerce();
             return coerce.fmap(RecursiveResult::terminate);
         });
     }
@@ -96,37 +99,7 @@ public final class IterateT<M extends MonadRec<?, M>, A> implements MonadT<M, A,
                                         MonadRec<RecursiveResult<Tuple2<IterateT<M, B>, Maybe<Tuple2<A, IterateT<M, A>>>>, IterateT<M, B>>, M> quux = maybeAB.match(
                                                 constantly(as.runIterateT().fmap(tail -> recurse(tuple(bs, tail)))),
                                                 into((ab, abs) -> {
-                                                    return ab.match(a__ -> {
-                                                        return as.cons(mmta.pure(a__)).runIterateT().flatMap(moreAs -> {
-
-                                                            return abs.fold((bsAndAs, aOrB) -> {
-                                                                return aOrB.match(
-                                                                        a_ -> {
-                                                                            Tuple2<IterateT<M, B>, IterateT<M, A>> fmap = bsAndAs.fmap(aas -> iterateT(mmta.pure(aas)).cons(mmta.pure(a_)));
-                                                                            return fmap._2().runIterateT().fmap(tupler(fmap._1()));
-                                                                        },
-                                                                        b -> {
-                                                                            return mmta.pure(bsAndAs.biMapL(it -> it.cons(mmta.pure(b))));
-                                                                        });
-                                                            }, tuple(bs, moreAs));
-                                                        }).fmap(RecursiveResult::recurse);
-
-                                                    }, b__ -> {
-                                                        return as.runIterateT().flatMap(moreAs -> {
-
-                                                            return abs.fold((bsAndAs, aOrB) -> {
-                                                                return aOrB.match(
-                                                                        a_ -> {
-                                                                            Tuple2<IterateT<M, B>, IterateT<M, A>> fmap = bsAndAs.fmap(aas -> iterateT(mmta.pure(aas)).cons(mmta.pure(a_)));
-                                                                            return fmap._2().runIterateT().fmap(tupler(fmap._1()));
-                                                                        },
-                                                                        b -> {
-                                                                            return mmta.pure(bsAndAs.biMapL(it -> it.cons(mmta.pure(b))));
-                                                                        });
-                                                            }, tuple(bs.cons(mmta.pure(b__)), moreAs));
-                                                        }).fmap(RecursiveResult::recurse);
-
-                                                    });
+                                                    return foo(bs, as, ab, abs);
                                                 }));
                                         return quux;
                                     })));
@@ -135,23 +108,85 @@ public final class IterateT<M extends MonadRec<?, M>, A> implements MonadT<M, A,
         return iterateT(baz);
     }
 
-    public static void main(String[] args) throws IOException {
+    private <B> MonadRec<RecursiveResult<Tuple2<IterateT<M, B>, Maybe<Tuple2<A, IterateT<M, A>>>>, IterateT<M, B>>, M> foo(
+            IterateT<M, B> bs, IterateT<M, A> as, RecursiveResult<A, B> ab, IterateT<M, RecursiveResult<A, B>> abs) {
+
+
+        return ab.match(a__ -> {
+            return as.cons(mmta.pure(a__)).runIterateT().flatMap(moreAs -> {
+
+                return abs.fold((bsAndAs, aOrB) -> {
+                    return aOrB.match(
+                            a_ -> {
+                                Tuple2<IterateT<M, B>, IterateT<M, A>> fmap = bsAndAs.fmap(aas -> iterateT(mmta.pure(aas)).cons(mmta.pure(a_)));
+                                return fmap._2().runIterateT().fmap(tupler(fmap._1()));
+                            },
+                            b -> {
+                                return mmta.pure(bsAndAs.biMapL(it -> it.cons(mmta.pure(b))));
+                            });
+                }, tuple(bs, moreAs));
+            }).fmap(RecursiveResult::recurse);
+
+        }, b__ -> {
+            return as.runIterateT().flatMap(moreAs -> {
+
+                return abs.fold((bsAndAs, aOrB) -> {
+                    return aOrB.match(
+                            a_ -> {
+                                Tuple2<IterateT<M, B>, IterateT<M, A>> fmap = bsAndAs.fmap(aas -> iterateT(mmta.pure(aas)).cons(mmta.pure(a_)));
+                                return fmap._2().runIterateT().fmap(tupler(fmap._1()));
+                            },
+                            b -> {
+                                return mmta.pure(bsAndAs.biMapL(it -> it.cons(mmta.pure(b))));
+                            });
+                }, tuple(bs.cons(mmta.pure(b__)), moreAs));
+            }).fmap(RecursiveResult::recurse);
+
+        });
+    }
+
+    public static void main2(String[] args) throws IOException {
         System.in.read();
         IterateT<Identity<?>, Integer> it = singleton(new Identity<>(1));
-        it
+        IterateT<Identity<?>, Integer> built = it
                 .trampolineM(x -> {
-                    if (x % 1_000_000 == 0)
-                        System.out.println(x);
-                    IterateT<Identity<?>, RecursiveResult<Integer, Integer>> it2 = singleton(new Identity<>(recurse(x + 1)));
-                    return x < 100_000_000 ? it2
-                                           : singleton(new Identity<>(terminate(x)));
-                })
-                .fold((xs, a) -> {
+                    if (x % 100_000 == 0)
+                        System.out.println("boing! " + x);
+                    return x < 10_000_000
+                           ? IterateT.<Identity<?>, RecursiveResult<Integer, Integer>>singleton(new Identity<>(terminate(x))).cons(new Identity<>(recurse(x + 1)))
+                           : IterateT.<Identity<?>, RecursiveResult<Integer, Integer>>singleton(
+                                   new Identity<>(terminate(x))).cons(new Identity<>(terminate(x + 1)));
+                });
 
-
-                    return new Identity<>(xs);
-                }, UNIT);
+        built.fold((__, x) -> {
+            if (x % 100_000 == 0)
+                System.out.println("x: " + x);
+            return new Identity<>(UNIT);
+        }, UNIT);
     }
+
+    public static void main(String[] args) throws IOException {
+        System.in.read();
+        IterateT<IO<?>, Integer> it = singleton(io(1));
+        IterateT<IO<?>, Integer> built = it
+                .trampolineM(x -> {
+                    if (x % 100_000 == 0)
+                        System.out.println("boing! " + x);
+                    return x < 1_000_000
+                           ? IterateT.<IO<?>, RecursiveResult<Integer, Integer>>singleton(io(() -> terminate(x))).cons(io(() -> recurse(x + 1)))
+                           : IterateT.<IO<?>, RecursiveResult<Integer, Integer>>singleton(
+                                   io(() -> terminate(x))).cons(io(() -> terminate(x + 1)));
+                });
+
+        built.<Unit, IO<Unit>>fold((acc, x) -> {
+            return io(() -> {
+                if (x % 100_000 == 0)
+                    System.out.println("x: " + x);
+            });
+        }, UNIT).unsafePerformIO();
+    }
+
+//    public <M_ extends Monad<
 
     public static <M extends MonadRec<?, M>, A> IterateT<M, A> empty(Pure<M> pureM) {
         MonadRec<Maybe<Tuple2<A, IterateT<M, A>>>, M> pureNothing = pureM.apply(nothing());
