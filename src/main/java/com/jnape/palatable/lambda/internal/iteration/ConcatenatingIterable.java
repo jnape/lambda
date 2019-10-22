@@ -1,5 +1,7 @@
 package com.jnape.palatable.lambda.internal.iteration;
 
+import com.jnape.palatable.lambda.internal.data.ImmutableQueue;
+
 import java.util.Iterator;
 
 import static com.jnape.palatable.lambda.functions.builtin.fn1.Flatten.flatten;
