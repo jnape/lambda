@@ -22,7 +22,103 @@ public class NewIO {
     private static abstract class Body<A> implements
         CoProduct4<Body.Pure<A>, Body.Impure<A>, Body.Zipped<?, A>, Body.FlatMapped<?, A>, Body<A>> {
 
-        public abstract Either<Body<A>, A> resume();
+        public final Either<Body<A>, A> resume() {
+            Zipped.Phi<RecursiveResult<Body<A>, Either<Body<A>, A>>, A> zippedPhi =
+                new Zipped.Phi<RecursiveResult<Body<A>,
+                    Either<Body<A>, A>>, A>() {
+                    @Override
+                    public <Z> RecursiveResult<Body<A>, Either<Body<A>, A>> eliminate(
+                        Body<Z> source,
+                        Body<Fn1<? super Z, ? extends A>> zBodyFn) {
+                        return source.match(
+                            pure -> withValue(zBodyFn, pure.a),
+                            impure -> withValue(zBodyFn, impure.fn.apply()),
+                            zipped -> {
+                                Zipped.Phi<RecursiveResult<Body<A>, Either<Body<A>, A>>, Z> phi =
+                                    new Zipped.Phi<RecursiveResult<Body<A>, Either<Body<A>, A>>, Z>() {
+                                        @Override
+                                        public <Y> RecursiveResult<Body<A>, Either<Body<A>, A>> eliminate(
+                                            Body<Y> ySource,
+                                            Body<Fn1<? super Y, ? extends Z>> yBodyFn) {
+                                            return recurse(flatMapped(
+                                                ySource, y -> flatMapped(
+                                                    yBodyFn, yz -> flatMapped(
+                                                        zBodyFn, zb -> pure(zb.apply(yz.apply(y)))))));
+                                        }
+                                    };
+                                return zipped.eliminate(phi);
+                            },
+                            flatMapped -> {
+                                FlatMapped.Phi<RecursiveResult<Body<A>, Either<Body<A>, A>>, Z> phi =
+                                    new FlatMapped.Phi<RecursiveResult<Body<A>, Either<Body<A>, A>>, Z>() {
+                                        @Override
+                                        public <Y> RecursiveResult<Body<A>, Either<Body<A>, A>> eliminate(
+                                            Body<Y> source, Fn1<? super Y, ? extends Body<Z>> bodyFn) {
+                                            return recurse(flatMapped(source,
+                                                                      y -> zipped(bodyFn.apply(y), zBodyFn)));
+                                        }
+                                    };
+                                return flatMapped.eliminate(phi);
+                            });
+                    }
+
+                    private <Z> RecursiveResult<Body<A>, Either<Body<A>, A>>
+                    withValue(Body<Fn1<? super Z, ? extends A>> bodyFn, Z z) {
+                        return bodyFn.match(
+                            pureFn -> terminate(right(pureFn.a.apply(z))),
+                            impureFn -> terminate(right(impureFn.fn.apply().apply(z))),
+                            zippedFn -> recurse(flatMapped(zippedFn, f -> pure(f.apply(z)))),
+                            flatMappedFn -> recurse(flatMapped(flatMappedFn, f -> pure(f.apply(z)))));
+                    }
+                };
+
+            FlatMapped.Phi<RecursiveResult<Body<A>, Either<Body<A>, A>>, A> flatMappedPhi =
+                new FlatMapped.Phi<RecursiveResult<Body<A>, Either<Body<A>, A>>, A>() {
+                    @Override
+                    public <Z> RecursiveResult<Body<A>, Either<Body<A>, A>> eliminate(
+                        Body<Z> source,
+                        Fn1<? super Z, ? extends Body<A>> bodyFn) {
+                        return source.match(
+                            pure -> terminate(left(bodyFn.apply(pure.a))),
+                            impure -> terminate(left(bodyFn.apply(impure.fn.apply()))),
+                            zipped -> {
+                                Zipped.Phi<RecursiveResult<Body<A>, Either<Body<A>, A>>, Z> phi =
+                                    new Zipped.Phi<RecursiveResult<Body<A>, Either<Body<A>, A>>, Z>() {
+                                        @Override
+                                        public <Y> RecursiveResult<Body<A>, Either<Body<A>, A>> eliminate(
+                                            Body<Y> source,
+                                            Body<Fn1<? super Y, ? extends Z>> yBodyFn) {
+                                            return recurse(flatMapped(
+                                                source, y -> flatMapped(
+                                                    yBodyFn, yz -> bodyFn.apply(yz.apply(y)))));
+                                        }
+                                    };
+                                return zipped.eliminate(phi);
+                            },
+                            flatMapped -> {
+                                FlatMapped.Phi<RecursiveResult<Body<A>, Either<Body<A>, A>>, Z> phi =
+                                    new FlatMapped.Phi<RecursiveResult<Body<A>, Either<Body<A>, A>>, Z>() {
+                                        @Override
+                                        public <Y> RecursiveResult<Body<A>, Either<Body<A>, A>> eliminate(
+                                            Body<Y> source, Fn1<? super Y, ? extends Body<Z>> yBodyFn) {
+                                            return recurse(flatMapped(source,
+                                                                      y -> flatMapped(yBodyFn.apply(y), bodyFn)));
+                                        }
+                                    };
+                                return flatMapped.eliminate(phi);
+                            }
+                        );
+                    }
+                };
+
+            return trampoline(
+                body -> body.match(
+                    pure -> terminate(right(pure.a)),
+                    impure -> terminate(right(impure.fn.apply())),
+                    zipped -> zipped.eliminate(zippedPhi),
+                    flatMapped -> flatMapped.eliminate(flatMappedPhi)),
+                this);
+        }
 
         public abstract Either<CompletableFuture<Body<A>>, CompletableFuture<A>> resumeAsync(Executor executor);
 
@@ -104,11 +200,6 @@ public class NewIO {
             }
 
             @Override
-            public Either<Body<A>, A> resume() {
-                return right(a);
-            }
-
-            @Override
             public Either<CompletableFuture<Body<A>>, CompletableFuture<A>> resumeAsync(Executor executor) {
                 return right(completedFuture(a));
             }
@@ -130,11 +221,6 @@ public class NewIO {
             }
 
             @Override
-            public Either<Body<A>, A> resume() {
-                return right(fn.apply());
-            }
-
-            @Override
             public Either<CompletableFuture<Body<A>>, CompletableFuture<A>> resumeAsync(Executor executor) {
                 return right(CompletableFuture.supplyAsync(fn::apply, executor));
             }
@@ -148,6 +234,7 @@ public class NewIO {
             }
         }
 
+
         public static final class Zipped<A, B> extends Body<B> {
             private final Body<A>                           source;
             private final Body<Fn1<? super A, ? extends B>> fn;
@@ -158,106 +245,8 @@ public class NewIO {
             }
 
             @Override
-            public Either<Body<B>, B> resume() {
-                Zipped.Phi<RecursiveResult<Body<B>, Either<Body<B>, B>>, B> zippedPhi =
-                    new Zipped.Phi<RecursiveResult<Body<B>,
-                        Either<Body<B>, B>>, B>() {
-                        @Override
-                        public <Z> RecursiveResult<Body<B>, Either<Body<B>, B>> eliminate(
-                            Body<Z> source,
-                            Body<Fn1<? super Z, ? extends B>> zBodyFn) {
-                            return source.match(
-                                pure -> withValue(zBodyFn, pure.a),
-                                impure -> withValue(zBodyFn, impure.fn.apply()),
-                                zipped -> {
-                                    Phi<RecursiveResult<Body<B>, Either<Body<B>, B>>, Z> phi =
-                                        new Phi<RecursiveResult<Body<B>, Either<Body<B>, B>>, Z>() {
-                                            @Override
-                                            public <Y> RecursiveResult<Body<B>, Either<Body<B>, B>> eliminate(
-                                                Body<Y> ySource,
-                                                Body<Fn1<? super Y, ? extends Z>> yBodyFn) {
-                                                return recurse(flatMapped(
-                                                    ySource, y -> flatMapped(
-                                                        yBodyFn, yz -> flatMapped(
-                                                            zBodyFn, zb -> pure(zb.apply(yz.apply(y)))))));
-                                            }
-                                        };
-                                    return zipped.eliminate(phi);
-                                },
-                                flatMapped -> {
-                                    FlatMapped.Phi<RecursiveResult<Body<B>, Either<Body<B>, B>>, Z> phi =
-                                        new FlatMapped.Phi<RecursiveResult<Body<B>, Either<Body<B>, B>>, Z>() {
-                                            @Override
-                                            public <Y> RecursiveResult<Body<B>, Either<Body<B>, B>> eliminate(
-                                                Body<Y> source, Fn1<? super Y, ? extends Body<Z>> bodyFn) {
-                                                return recurse(flatMapped(source,
-                                                                          y -> zipped(bodyFn.apply(y), zBodyFn)));
-                                            }
-                                        };
-                                    return flatMapped.eliminate(phi);
-                                });
-                        }
-
-                        private <Z> RecursiveResult<Body<B>, Either<Body<B>, B>>
-                        withValue(Body<Fn1<? super Z, ? extends B>> bodyFn, Z z) {
-                            return bodyFn.match(
-                                pureFn -> terminate(right(pureFn.a.apply(z))),
-                                impureFn -> terminate(right(impureFn.fn.apply().apply(z))),
-                                zippedFn -> recurse(flatMapped(zippedFn, f -> pure(f.apply(z)))),
-                                flatMappedFn -> recurse(flatMapped(flatMappedFn, f -> pure(f.apply(z)))));
-                        }
-                    };
-
-                FlatMapped.Phi<RecursiveResult<Body<B>, Either<Body<B>, B>>, B> flatMappedPhi =
-                    new FlatMapped.Phi<RecursiveResult<Body<B>, Either<Body<B>, B>>, B>() {
-                        @Override
-                        public <Z> RecursiveResult<Body<B>, Either<Body<B>, B>> eliminate(
-                            Body<Z> source,
-                            Fn1<? super Z, ? extends Body<B>> bodyFn) {
-                            return source.match(
-                                pure -> terminate(left(bodyFn.apply(pure.a))),
-                                impure -> terminate(left(bodyFn.apply(impure.fn.apply()))),
-                                zipped -> {
-                                    Phi<RecursiveResult<Body<B>, Either<Body<B>, B>>, Z> phi =
-                                        new Phi<RecursiveResult<Body<B>, Either<Body<B>, B>>, Z>() {
-                                            @Override
-                                            public <Y> RecursiveResult<Body<B>, Either<Body<B>, B>> eliminate(
-                                                Body<Y> source,
-                                                Body<Fn1<? super Y, ? extends Z>> yBodyFn) {
-                                                return recurse(flatMapped(
-                                                    source, y -> flatMapped(
-                                                        yBodyFn, yz -> bodyFn.apply(yz.apply(y)))));
-                                            }
-                                        };
-                                    return zipped.eliminate(phi);
-                                },
-                                flatMapped -> {
-                                    FlatMapped.Phi<RecursiveResult<Body<B>, Either<Body<B>, B>>, Z> phi =
-                                        new FlatMapped.Phi<RecursiveResult<Body<B>, Either<Body<B>, B>>, Z>() {
-                                            @Override
-                                            public <Y> RecursiveResult<Body<B>, Either<Body<B>, B>> eliminate(
-                                                Body<Y> source, Fn1<? super Y, ? extends Body<Z>> yBodyFn) {
-                                                return recurse(flatMapped(source,
-                                                                          y -> flatMapped(yBodyFn.apply(y), bodyFn)));
-                                            }
-                                        };
-                                    return flatMapped.eliminate(phi);
-                                }
-                            );
-                        }
-                    };
-
-                return trampoline(
-                    body -> body.match(
-                        pure -> terminate(pure.resume()),
-                        impure -> terminate(impure.resume()),
-                        zipped -> zipped.eliminate(zippedPhi),
-                        flatMapped -> flatMapped.eliminate(flatMappedPhi)),
-                    (Body<B>) this);
-            }
-
-            @Override
             public Either<CompletableFuture<Body<B>>, CompletableFuture<B>> resumeAsync(Executor executor) {
+
                 throw new UnsupportedOperationException();
             }
 
@@ -286,95 +275,6 @@ public class NewIO {
             private FlatMapped(Body<A> source, Fn1<? super A, ? extends Body<B>> fn) {
                 this.source = source;
                 this.fn = fn;
-            }
-
-            @Override
-            public Either<Body<B>, B> resume() {
-                Zipped.Phi<RecursiveResult<Body<B>, Either<Body<B>, B>>, B> zippedPhi =
-                    new Zipped.Phi<RecursiveResult<Body<B>, Either<Body<B>, B>>, B>() {
-                        @Override
-                        public <Z> RecursiveResult<Body<B>, Either<Body<B>, B>> eliminate(
-                            Body<Z> source,
-                            Body<Fn1<? super Z, ? extends B>> bodyFn) {
-                            return source.match(
-                                pure -> recurse(flatMapped(bodyFn, zb -> pure(zb.apply(pure.a)))),
-                                impure -> recurse(flatMapped(bodyFn, zb -> pure(zb.apply(impure.fn.apply())))),
-                                zipped -> {
-                                    Zipped.Phi<RecursiveResult<Body<B>, Either<Body<B>, B>>, Z> phi =
-                                        new Zipped.Phi<RecursiveResult<Body<B>, Either<Body<B>, B>>, Z>() {
-                                            @Override
-                                            public <Y> RecursiveResult<Body<B>, Either<Body<B>, B>> eliminate(
-                                                Body<Y> source, Body<Fn1<? super Y, ? extends Z>> yBodyFn) {
-                                                return recurse(flatMapped(
-                                                    source, y -> flatMapped(
-                                                        yBodyFn, yz -> flatMapped(
-                                                            bodyFn, zb -> pure(zb.apply(yz.apply(y)))))));
-                                            }
-                                        };
-                                    return zipped.eliminate(phi);
-                                },
-                                flatMapped -> {
-                                    Phi<RecursiveResult<Body<B>, Either<Body<B>, B>>, Z> phi =
-                                        new Phi<RecursiveResult<Body<B>, Either<Body<B>, B>>, Z>() {
-                                            @Override
-                                            public <Y> RecursiveResult<Body<B>, Either<Body<B>, B>> eliminate(
-                                                Body<Y> source, Fn1<? super Y, ? extends Body<Z>> yBodyFn) {
-                                                return recurse(flatMapped(
-                                                    source, y -> flatMapped(
-                                                        yBodyFn.apply(y), z -> flatMapped(
-                                                            bodyFn, zb -> pure(zb.apply(z))))));
-                                            }
-                                        };
-                                    return flatMapped.eliminate(phi);
-                                });
-                        }
-                    };
-                Phi<RecursiveResult<Body<B>, Either<Body<B>, B>>, B> flatMappedPhi =
-                    new Phi<RecursiveResult<Body<B>, Either<Body<B>, B>>, B>() {
-                        @Override
-                        public <Z> RecursiveResult<Body<B>, Either<Body<B>, B>> eliminate(
-                            Body<Z> source,
-                            Fn1<? super Z, ? extends Body<B>> bodyFn) {
-                            return source.match(
-                                pure -> recurse(bodyFn.apply(pure.a)),
-                                impure -> recurse(bodyFn.apply(impure.fn.apply())),
-                                zipped -> {
-                                    Zipped.Phi<RecursiveResult<Body<B>, Either<Body<B>, B>>, Z> phi =
-                                        new Zipped.Phi<RecursiveResult<Body<B>, Either<Body<B>, B>>, Z>() {
-                                            @Override
-                                            public <Y> RecursiveResult<Body<B>, Either<Body<B>, B>> eliminate(
-                                                Body<Y> source, Body<Fn1<? super Y, ? extends Z>> yBodyFn) {
-                                                return recurse(flatMapped(
-                                                    source, y -> flatMapped(yBodyFn, yz -> bodyFn.apply(yz.apply(y)))));
-                                            }
-                                        };
-                                    return zipped.eliminate(phi);
-                                },
-                                flatMapped -> {
-                                    Phi<RecursiveResult<Body<B>, Either<Body<B>, B>>, Z> phi =
-                                        new Phi<RecursiveResult<Body<B>, Either<Body<B>, B>>, Z>() {
-                                            @Override
-                                            public <Y> RecursiveResult<Body<B>, Either<Body<B>, B>> eliminate(
-                                                Body<Y> source,
-                                                Fn1<? super Y, ? extends Body<Z>> yBodyFn) {
-                                                return recurse(flatMapped(
-                                                    source, y -> flatMapped(
-                                                        yBodyFn.apply(y), bodyFn)));
-                                            }
-                                        };
-                                    return flatMapped.eliminate(phi);
-                                }
-                            );
-                        }
-                    };
-
-                return trampoline(
-                    body -> body.match(
-                        pure -> terminate(pure.resume()),
-                        impure -> terminate(impure.resume()),
-                        zipped -> zipped.eliminate(zippedPhi),
-                        flatMapped -> flatMapped.eliminate(flatMappedPhi)),
-                    (Body<B>) this);
             }
 
             @Override
