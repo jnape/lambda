@@ -6,6 +6,7 @@ import com.jnape.palatable.lambda.functions.Fn0;
 import com.jnape.palatable.lambda.functions.Fn1;
 import com.jnape.palatable.lambda.functions.recursion.RecursiveResult;
 
+import java.io.IOException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ForkJoinPool;
@@ -50,11 +51,7 @@ class NewIO {
         }
 
         final CompletableFuture<A> unsafeRunAsync(Executor executor) {
-            Either<CompletableFuture<Body<A>>, CompletableFuture<A>> completableFutureCompletableFutureEither =
-                resumeAsync(executor);
-
-            System.out.println(completableFutureCompletableFutureEither);
-            return completableFutureCompletableFutureEither
+            return resumeAsync(executor)
                 .recover(futureBody -> thenCompose(futureBody, body -> body.unsafeRunAsync(executor)));
         }
 
@@ -74,7 +71,7 @@ class NewIO {
             return new FlatMapped<>(body, bodyFn);
         }
 
-        public static void main(String[] args) {
+        public static void main(String[] args) throws IOException {
 //            System.out.println(zipped(pure(1), pure(x -> x + 1)).resume());
 //
 //            System.out.println(times(100000, p -> zipped(p, pure(x -> x + 1)), pure(1)).unsafeRunSync());
@@ -110,16 +107,20 @@ class NewIO {
 //
 //            System.out.println("result = " + result);
 
-            Integer res = times(2, bi -> zipped(bi, impure(() -> {
+            System.in.read();
+
+            Integer res = times(10_000_000, bi -> zipped(bi, impure(() -> {
                 System.out.println(Thread.currentThread());
-                Thread.sleep(1000);
+//                Thread.sleep(1000);
                 return x -> x + 1;
             })), impure(() -> {
                 System.out.println(Thread.currentThread());
-                Thread.sleep(1000);
+//                Thread.sleep(1000);
                 return 1;
             }))
                 .unsafeRunAsync(ForkJoinPool.commonPool()).join();
+
+
 
             System.out.println("res = " + res);
         }

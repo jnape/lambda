@@ -77,31 +77,8 @@ final class ZippedPhiAsync<A> implements
                 public <Y> RecursiveResult<Body<A>, Either<CompletableFuture<Body<A>>, CompletableFuture<A>>> eliminate(
                     Body<Y> bodyY,
                     Body<Fn1<? super Y, ? extends Fn1<? super Z, ? extends A>>> bodyYZA) {
-
-
-//                    CompletableFuture<Y> yCompletableFuture = bodyY.unsafeRunAsync(executor);
-//                    CompletableFuture<Fn1<? super Y, ? extends Fn1<? super Z, ? extends A>>> fn1CompletableFuture =
-//                        bodyYZA.unsafeRunAsync(executor);
-
-
-//                    CompletableFuture<Fn1<? super Z, ? extends A>> futureZA =
-//                        yCompletableFuture.thenCombineAsync(fn1CompletableFuture, (y, yza) -> yza.apply(y), executor);
-
-
-                    Body<Z> impure = impure(futureZ::get);
-
-                    return recurse(zipped(bodyY, zipped(impure, zipped(bodyYZA, pure(yza -> {
-                        return z -> {
-                            return y -> yza.apply(y).apply(z);
-                        };
-                    })))));
-
-
-//                    return terminate(right(futureZA.thenCombine(futureZ, (za, z) -> za.apply(z))));
-
-
-//                    return terminate(left(thenApply(futureZ, z -> zipped(
-//                        bodyY, flatMapped(bodyYZA, yza -> pure(y -> yza.apply(y).apply(z)))))));
+                    return terminate(left(thenApply(futureZ, z -> zipped(
+                        bodyY, flatMapped(bodyYZA, yza -> pure(y -> yza.apply(y).apply(z)))))));
                 }
             }),
             flatMappedZA -> flatMappedZA.eliminate(new FlatMapped.Phi<
