@@ -8,41 +8,42 @@ import com.jnape.palatable.lambda.io.NewIO.Body.FlatMapped;
 
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicInteger;
 
-import static com.jnape.palatable.lambda.adt.Either.left;
+import static com.jnape.palatable.lambda.adt.Either.right;
 import static com.jnape.palatable.lambda.functions.recursion.RecursiveResult.recurse;
 import static com.jnape.palatable.lambda.functions.recursion.RecursiveResult.terminate;
-import static com.jnape.palatable.lambda.io.Futures.thenApply;
-import static com.jnape.palatable.lambda.io.NewIO.Body.flatMapped;
+import static com.jnape.palatable.lambda.io.Futures.thenCompose;
 import static java.util.concurrent.CompletableFuture.supplyAsync;
 
 class FlatMappedPhiAsync<A> implements
-    FlatMapped.Phi<RecursiveResult<Body<A>, Either<CompletableFuture<Body<A>>, CompletableFuture<A>>>, A> {
+    FlatMapped.Phi<RecursiveResult<Body<A>, Either<Either<Body<CompletableFuture<A>>, Body.Parallel<?, A>>,
+        CompletableFuture<A>>>, A> {
     private final Executor executor;
+
+    static AtomicInteger counter = new AtomicInteger(0);
 
     FlatMappedPhiAsync(Executor executor) {
         this.executor = executor;
     }
 
     @Override
-    public <Z> RecursiveResult<Body<A>, Either<CompletableFuture<Body<A>>, CompletableFuture<A>>> eliminate(
+    public <Z> RecursiveResult<Body<A>, Either<Either<Body<CompletableFuture<A>>, Body.Parallel<?, A>>,
+        CompletableFuture<A>>> eliminate(
         Body<Z> bodyZ, Fn1<? super Z, ? extends Body<A>> zBodyA) {
         return bodyZ.match(
-            pureZ -> recurse(zBodyA.apply(pureZ.value)),
-            impureZ -> terminate(left(thenApply(supplyAsync(impureZ.computation.toSupplier(), executor), zBodyA))),
-            zippedZ -> zippedZ.eliminate(new ZippedPhiAsync<>(executor)).biMap(
-                bodyZ_ -> flatMapped(bodyZ_, zBodyA),
-                futureBodyZOrFutureZ -> futureBodyZOrFutureZ.match(
-                    futureBodyZ -> left(thenApply(futureBodyZ, bodyZ_ -> flatMapped(bodyZ_, zBodyA))),
-                    futureZ -> left(thenApply(futureZ, zBodyA)))),
-            flatMappedZ -> flatMappedZ.eliminate(new FlatMapped.Phi<
-                RecursiveResult<Body<A>,
-                    Either<CompletableFuture<Body<A>>, CompletableFuture<A>>>, Z>() {
-                @Override
-                public <Y> RecursiveResult<Body<A>, Either<CompletableFuture<Body<A>>, CompletableFuture<A>>> eliminate(
-                    Body<Y> bodyY, Fn1<? super Y, ? extends Body<Z>> yBodyZ) {
-                    return recurse(flatMapped(bodyY, y -> flatMapped(yBodyZ.apply(y), zBodyA)));
-                }
-            }));
+            pureZ -> AsyncPhis.pureWithFlatMap(pureZ, zBodyA),
+            impureZ -> {
+                //todo: this is still dangerous
+                CompletableFuture<Z> futureZ = supplyAsync(impureZ.computation.toSupplier(), executor);
+
+                return terminate(right(thenCompose(futureZ, z -> zBodyA.apply(z).unsafeRunAsync(executor), executor)));
+
+                // Future z -> (z -> Body a) -> ???
+                // Future z -> Body (z -> a) -> ???
+            },
+            zippedZ -> AsyncPhis.zippedWithFlatMap(zippedZ, zBodyA),
+            flatMappedZ -> AsyncPhis.flatMappedWithFlatMap(flatMappedZ, zBodyA)
+        );
     }
 }

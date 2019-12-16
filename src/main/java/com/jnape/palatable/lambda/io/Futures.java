@@ -3,6 +3,7 @@ package com.jnape.palatable.lambda.io;
 import com.jnape.palatable.lambda.functions.Fn1;
 
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
 
 final class Futures {
     private Futures() {
@@ -14,12 +15,8 @@ final class Futures {
     }
 
     public static <A, B> CompletableFuture<B> thenCompose(CompletableFuture<A> futureA,
-                                                          CompletableFuture<Fn1<? super A, ? extends B>> futureFn) {
-        return futureA.thenCompose(a -> futureFn.thenApply(f -> f.apply(a)));
-    }
-
-    public static <A, B> CompletableFuture<B> thenCompose(CompletableFuture<A> futureA,
-                                                          Fn1<? super A, ? extends CompletableFuture<B>> futureFn) {
-        return futureA.thenCompose(futureFn.toFunction());
+                                                          Fn1<? super A, ? extends CompletableFuture<B>> futureFn,
+                                                          Executor executor) {
+        return futureA.thenComposeAsync(futureFn.toFunction(), executor);
     }
 }

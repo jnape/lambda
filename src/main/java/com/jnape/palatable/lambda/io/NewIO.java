@@ -15,7 +15,7 @@ import static com.jnape.palatable.lambda.adt.Either.right;
 import static com.jnape.palatable.lambda.functions.builtin.fn3.Times.times;
 import static com.jnape.palatable.lambda.functions.recursion.RecursiveResult.terminate;
 import static com.jnape.palatable.lambda.functions.recursion.Trampoline.trampoline;
-import static com.jnape.palatable.lambda.io.Futures.thenCompose;
+import static java.lang.Thread.sleep;
 import static java.util.concurrent.CompletableFuture.completedFuture;
 import static java.util.concurrent.CompletableFuture.supplyAsync;
 
@@ -33,15 +33,23 @@ class NewIO {
                 this);
         }
 
-        final Either<CompletableFuture<Body<A>>, CompletableFuture<A>> resumeAsync(Executor executor) {
-            return trampoline(
-                body -> body.match(
-                    pure -> terminate(right(completedFuture(pure.value))),
-                    impure -> terminate(right(supplyAsync(impure.computation::apply, executor))),
-                    zipped -> zipped.eliminate(new ZippedPhiAsync<>(executor)),
-                    flatMapped -> flatMapped.eliminate(new FlatMappedPhiAsync<>(executor))
-                ),
-                this);
+
+        static final class Parallel<A, B> {
+            private final CompletableFuture<A>              futureA;
+            private final Body<Fn1<? super A, ? extends B>> bodyAB;
+
+            Parallel(CompletableFuture<A> futureA, Body<Fn1<? super A, ? extends B>> bodyAB) {
+                this.futureA = futureA;
+                this.bodyAB = bodyAB;
+            }
+
+            <R> R eliminate(Phi<B, R> phi) {
+                return phi.eliminate(futureA, bodyAB);
+            }
+
+            interface Phi<B, R> {
+                <A> R eliminate(CompletableFuture<A> futureA, Body<Fn1<? super A, ? extends B>> bodyAB);
+            }
         }
 
         final A unsafeRunSync() {
@@ -51,8 +59,24 @@ class NewIO {
         }
 
         final CompletableFuture<A> unsafeRunAsync(Executor executor) {
-            return resumeAsync(executor)
-                .recover(futureBody -> thenCompose(futureBody, body -> body.unsafeRunAsync(executor)));
+
+            return trampoline(
+                body -> body.match(
+                    pureZ -> terminate(completedFuture(pureZ.value)),
+                    impureZ -> terminate(supplyAsync(impureZ.computation.toSupplier(), executor)),
+                    zippedZ -> zippedZ.eliminate(new ZippedPhiAsync<>(executor)).match(
+                        RecursiveResult::recurse,
+                        ee -> ee.match(
+                            bodyFutureAOrParallelA -> null,
+                            futureA -> null
+                        )),
+                    flatMappedZ -> flatMappedZ.eliminate(new FlatMappedPhiAsync<>(executor)).match(
+                        RecursiveResult::recurse,
+                        ee -> ee.match(
+                            bodyFutureAOrParallelA -> null,
+                            futureA -> null
+                        ))),
+                this);
         }
 
         static <A> Body<A> pure(A a) {
@@ -109,17 +133,29 @@ class NewIO {
 
             System.in.read();
 
-            Integer res = times(10_000_000, bi -> zipped(bi, impure(() -> {
-                System.out.println(Thread.currentThread());
-//                Thread.sleep(1000);
+            new Thread(() -> {
+                while (true) {
+                    System.out.println(FlatMappedPhiAsync.counter.get());
+                    try {
+                        sleep(1000);
+                    } catch (InterruptedException e) {
+                        e.printStackTrace();
+                    }
+                }
+            }) {{
+                start();
+            }};
+
+            Integer res = times(10_000, bi -> zipped(bi, impure(() -> {
+//                System.out.println(Thread.currentThread());
+//                Thread.sleep(500);
                 return x -> x + 1;
             })), impure(() -> {
-                System.out.println(Thread.currentThread());
+//                System.out.println(Thread.currentThread());
 //                Thread.sleep(1000);
                 return 1;
             }))
                 .unsafeRunAsync(ForkJoinPool.commonPool()).join();
-
 
 
             System.out.println("res = " + res);
