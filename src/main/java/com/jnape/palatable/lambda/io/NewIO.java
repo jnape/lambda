@@ -11,13 +11,14 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ForkJoinPool;
 
+import static com.jnape.palatable.lambda.adt.Either.left;
 import static com.jnape.palatable.lambda.adt.Either.right;
+import static com.jnape.palatable.lambda.functions.builtin.fn1.Id.id;
 import static com.jnape.palatable.lambda.functions.builtin.fn3.Times.times;
+import static com.jnape.palatable.lambda.functions.recursion.RecursiveResult.recurse;
 import static com.jnape.palatable.lambda.functions.recursion.RecursiveResult.terminate;
 import static com.jnape.palatable.lambda.functions.recursion.Trampoline.trampoline;
 import static java.lang.Thread.sleep;
-import static java.util.concurrent.CompletableFuture.completedFuture;
-import static java.util.concurrent.CompletableFuture.supplyAsync;
 
 class NewIO {
     static abstract class Body<A> implements
@@ -33,24 +34,31 @@ class NewIO {
                 this);
         }
 
+        static final class Progress<A, B> {
+            private final Future<A>                                                                    futureA;
+            private final Either<Body<Fn1<? super A, ? extends B>>, Fn1<? super A, ? extends Body<B>>> composition;
 
-        static final class Parallel<A, B> {
-            private final CompletableFuture<A>              futureA;
-            private final Body<Fn1<? super A, ? extends B>> bodyAB;
-
-            Parallel(CompletableFuture<A> futureA, Body<Fn1<? super A, ? extends B>> bodyAB) {
+            Progress(Future<A> futureA,
+                     Either<Body<Fn1<? super A, ? extends B>>, Fn1<? super A, ? extends Body<B>>> composition) {
                 this.futureA = futureA;
-                this.bodyAB = bodyAB;
+                this.composition = composition;
             }
 
-            <R> R eliminate(Phi<B, R> phi) {
-                return phi.eliminate(futureA, bodyAB);
+            <R> R eliminate(Phi<B, R> phi, Psi<B, R> psi) {
+                return composition.match(bodyAB -> phi.eliminate(futureA, bodyAB),
+                                         aBodyB -> psi.eliminate(futureA, aBodyB));
             }
 
             interface Phi<B, R> {
-                <A> R eliminate(CompletableFuture<A> futureA, Body<Fn1<? super A, ? extends B>> bodyAB);
+                <A> R eliminate(Future<A> futureA, Body<Fn1<? super A, ? extends B>> bodyAB);
+            }
+
+            interface Psi<B, R> {
+                <A> R eliminate(Future<A> futureA, Fn1<? super A, ? extends Body<B>> aBodyB);
             }
         }
+
+        abstract RecursiveResult<Progress<?, A>, Future<A>> resumeAsync(Executor executor);
 
         final A unsafeRunSync() {
             return resume().recover(trampoline(body -> body.resume()
@@ -60,23 +68,11 @@ class NewIO {
 
         final CompletableFuture<A> unsafeRunAsync(Executor executor) {
 
-            return trampoline(
-                body -> body.match(
-                    pureZ -> terminate(completedFuture(pureZ.value)),
-                    impureZ -> terminate(supplyAsync(impureZ.computation.toSupplier(), executor)),
-                    zippedZ -> zippedZ.eliminate(new ZippedPhiAsync<>(executor)).match(
-                        RecursiveResult::recurse,
-                        ee -> ee.match(
-                            bodyFutureAOrParallelA -> null,
-                            futureA -> null
-                        )),
-                    flatMappedZ -> flatMappedZ.eliminate(new FlatMappedPhiAsync<>(executor)).match(
-                        RecursiveResult::recurse,
-                        ee -> ee.match(
-                            bodyFutureAOrParallelA -> null,
-                            futureA -> null
-                        ))),
-                this);
+            resumeAsync(executor)
+                .<Future<A>>match(trampoline(progress -> {
+                    return progress.eliminate(null, null);
+                }), id())
+                .unsafeRun();
         }
 
         static <A> Body<A> pure(A a) {
@@ -135,7 +131,6 @@ class NewIO {
 
             new Thread(() -> {
                 while (true) {
-                    System.out.println(FlatMappedPhiAsync.counter.get());
                     try {
                         sleep(1000);
                     } catch (InterruptedException e) {
@@ -175,6 +170,11 @@ class NewIO {
                                Fn1<? super FlatMapped<?, A>, ? extends R> dFn) {
                 return aFn.apply(this);
             }
+
+            @Override
+            RecursiveResult<Progress<?, A>, Future<A>> resumeAsync(Executor executor) {
+                return terminate(Future.completed(value));
+            }
         }
 
         public static final class Impure<A> extends Body<A> {
@@ -190,6 +190,11 @@ class NewIO {
                                Fn1<? super Zipped<?, A>, ? extends R> cFn,
                                Fn1<? super FlatMapped<?, A>, ? extends R> dFn) {
                 return bFn.apply(this);
+            }
+
+            @Override
+            RecursiveResult<Progress<?, A>, Future<A>> resumeAsync(Executor executor) {
+                return terminate(Future.start(computation, executor));
             }
         }
 
@@ -211,12 +216,80 @@ class NewIO {
                 <A> R eliminate(Body<A> source, Body<Fn1<? super A, ? extends B>> bodyFn);
             }
 
+            public interface Psi<R> {
+                <A> R eliminate(Impure<A> source);
+            }
+
             @Override
             public <R> R match(Fn1<? super Pure<B>, ? extends R> aFn,
                                Fn1<? super Impure<B>, ? extends R> bFn,
                                Fn1<? super Zipped<?, B>, ? extends R> cFn,
                                Fn1<? super FlatMapped<?, B>, ? extends R> dFn) {
                 return cFn.apply(this);
+            }
+
+            @Override
+            RecursiveResult<Progress<?, B>, Future<B>> resumeAsync(Executor executor) {
+                RecursiveResult<Progress<?, A>, Future<A>> trampoline = trampoline(
+                    bodyA -> bodyA.match(
+                        pureA -> terminate(pureA.resumeAsync(executor)),
+                        impureA -> terminate(impureA.resumeAsync(executor)),
+                        zippedA -> zippedA.eliminate(new Phi<RecursiveResult<Body<A>, RecursiveResult<Progress<?, A>, Future<A>>>, A>() {
+                            @Override
+                            public <Z> RecursiveResult<Body<A>, RecursiveResult<Progress<?, A>, Future<A>>> eliminate(
+                                Body<Z> bodyZ, Body<Fn1<? super Z, ? extends A>> bodyZA) {
+                                return bodyZ.match(
+                                    pureZ -> AsyncPhis.pureWithZip(pureZ, bodyZA),
+                                    impureZ -> terminate(recurse(new Progress<>(Future.start(impureZ.computation, executor), left(bodyZA)))),
+                                    zippedZ -> AsyncPhis.zippedWithZip(zippedZ, bodyZA),
+                                    flatMappedZ -> AsyncPhis.flatMappedWithZip(flatMappedZ, bodyZA)
+                                );
+                            }
+                        }),
+                        flatMappedA -> {
+                            FlatMapped.Phi<RecursiveResult<Body<A>, RecursiveResult<Progress<?, A>, Future<A>>>, A> phi1 =
+                                new FlatMapped.Phi<RecursiveResult<Body<A>, RecursiveResult<Progress<?, A>, Future<A>>>, A>() {
+                                    @Override
+                                    public <Z> RecursiveResult<Body<A>, RecursiveResult<Progress<?, A>, Future<A>>> eliminate(
+                                        Body<Z> bodyZ, Fn1<? super Z, ? extends Body<A>> zBodyA) {
+                                        return bodyZ.match(
+                                            pureZ -> AsyncPhis.pureWithFlatMap(pureZ, zBodyA),
+                                            impureZ -> terminate(recurse(new Progress<>(Future.start(impureZ.computation, executor), right(zBodyA)))),
+                                            zippedZ -> AsyncPhis.zippedWithFlatMap(zippedZ, zBodyA),
+                                            flatMappedZ -> AsyncPhis.flatMappedWithFlatMap(flatMappedZ, zBodyA)
+                                        );
+                                    }
+                                };
+                            return flatMappedA.eliminate(phi1);
+                        }
+                    ),
+                    source);
+
+                return trampoline.match(
+                    progress -> {
+                        Progress.Phi<A, RecursiveResult<Progress<?, B>, Future<B>>> phi =
+                            new Progress.Phi<A, RecursiveResult<Progress<?, B>, Future<B>>>() {
+                                @Override
+                                public <Z> RecursiveResult<Progress<?, B>, Future<B>> eliminate(
+                                    Future<Z> futureZ, Body<Fn1<? super Z, ? extends A>> bodyZA) {
+                                    return recurse(new Progress<>(
+                                        futureZ, left(zipped(bodyZA, flatMapped(
+                                        fn, ab -> pure(za -> z -> ab.apply(za.apply(z))))))));
+                                }
+                            };
+                        Progress.Psi<A, RecursiveResult<Progress<?, B>, Future<B>>> psi =
+                            new Progress.Psi<A, RecursiveResult<Progress<?, B>, Future<B>>>() {
+                                @Override
+                                public <Z> RecursiveResult<Progress<?, B>, Future<B>> eliminate(
+                                    Future<Z> futureZ, Fn1<? super Z, ? extends Body<A>> zBodyA) {
+                                    //todo: could theoretically immediately zip with fn here if needed
+                                    return recurse(new Progress<>(
+                                        futureZ, right(z -> zipped(zBodyA.apply(z), fn))));
+                                }
+                            };
+                        return progress.eliminate(phi, psi);
+                    },
+                    futureA -> recurse(new Progress<>(futureA, left(fn))));
             }
         }
 
