@@ -14,6 +14,7 @@ import static com.jnape.palatable.lambda.functions.builtin.fn3.Times.times;
 import static com.jnape.palatable.lambda.functions.recursion.RecursiveResult.recurse;
 import static com.jnape.palatable.lambda.functions.recursion.RecursiveResult.terminate;
 import static com.jnape.palatable.lambda.io.Futures.thenCombine;
+import static com.jnape.palatable.lambda.io.Futures.thenCombineAsync;
 import static java.util.concurrent.CompletableFuture.completedFuture;
 import static java.util.concurrent.CompletableFuture.supplyAsync;
 
@@ -36,7 +37,7 @@ public class Future<A> implements MonadRec<A, Future<?>> {
 
     @Override
     public <B> Future<B> zip(Applicative<Fn1<? super A, ? extends B>, Future<?>> appFn) {
-        return new Future<>(thenCombine(unsafeRun(), appFn.<Future<Fn1<? super A, ? extends B>>>coerce().unsafeRun()));
+        return new Future<>(thenCombineAsync(unsafeRun(), appFn.<Future<Fn1<? super A, ? extends B>>>coerce().unsafeRun()));
     }
 
     @Override

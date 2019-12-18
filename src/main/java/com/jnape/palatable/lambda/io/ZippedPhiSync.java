@@ -3,13 +3,12 @@ package com.jnape.palatable.lambda.io;
 import com.jnape.palatable.lambda.adt.Either;
 import com.jnape.palatable.lambda.functions.Fn1;
 import com.jnape.palatable.lambda.functions.recursion.RecursiveResult;
-import com.jnape.palatable.lambda.io.NewIO.Body;
-import com.jnape.palatable.lambda.io.NewIO.Body.*;
+import com.jnape.palatable.lambda.io.Body.*;
 
 import static com.jnape.palatable.lambda.adt.Either.right;
 import static com.jnape.palatable.lambda.functions.recursion.RecursiveResult.recurse;
 import static com.jnape.palatable.lambda.functions.recursion.RecursiveResult.terminate;
-import static com.jnape.palatable.lambda.io.NewIO.Body.*;
+import static com.jnape.palatable.lambda.io.Body.*;
 
 final class ZippedPhiSync<A> implements
     Zipped.Phi<RecursiveResult<Body<A>, Either<Body<A>, A>>, A> {
