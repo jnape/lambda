@@ -493,18 +493,4 @@ public abstract class IO<A> implements MonadRec<A, IO<?>>, MonadError<Throwable,
             return (CompletableFuture<A>) lazyFuture.value();
         }
     }
-
-    public static void main(String[] args) {
-        IO<Unit> job = io(0)
-            .trampolineM(count -> io(() -> {
-                if (count % 100_000 == 0)
-                    out.println(count);
-                return recurse(count + 1);
-            }));
-
-        CompletableFuture<Unit> fut = io(sideEffect(job::unsafePerformIO)).unsafePerformAsyncIO();
-        out.println("done");
-
-        fut.join();
-    }
 }

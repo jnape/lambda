@@ -6,19 +6,17 @@ import com.jnape.palatable.lambda.functions.Fn0;
 import com.jnape.palatable.lambda.functions.Fn1;
 import com.jnape.palatable.lambda.functions.recursion.RecursiveResult;
 
-import java.io.IOException;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
-import java.util.concurrent.ForkJoinPool;
 
+import static com.jnape.palatable.lambda.adt.Either.left;
 import static com.jnape.palatable.lambda.adt.Either.right;
 import static com.jnape.palatable.lambda.functions.builtin.fn1.Id.id;
-import static com.jnape.palatable.lambda.functions.builtin.fn3.Times.times;
 import static com.jnape.palatable.lambda.functions.recursion.RecursiveResult.terminate;
 import static com.jnape.palatable.lambda.functions.recursion.Trampoline.trampoline;
-import static com.jnape.palatable.lambda.io.AsyncPhis.unwind;
-import static com.jnape.palatable.lambda.io.IO.io;
+import static com.jnape.palatable.lambda.io.Unwind.leftMost;
+import static java.util.concurrent.ForkJoinPool.commonPool;
 
 abstract class Body<A> implements
     CoProduct4<Body.Pure<A>, Body.Impure<A>, Body.Zipped<?, A>, Body.FlatMapped<?, A>, Body<A>> {
@@ -33,32 +31,32 @@ abstract class Body<A> implements
             this);
     }
 
-    static final class Progress<A, B> {
-        private final Future<A>                                                                    futureA;
-        private final Either<Body<Fn1<? super A, ? extends B>>, Fn1<? super A, ? extends Body<B>>> composition;
-
-        Progress(Future<A> futureA,
-                 Either<Body<Fn1<? super A, ? extends B>>, Fn1<? super A, ? extends Body<B>>> composition) {
-            this.futureA = futureA;
-            this.composition = composition;
-        }
-
-        <R> R eliminate(Progress.Phi<B, R> phi, Progress.Psi<B, R> psi) {
-            return composition.match(bodyAB -> phi.eliminate(futureA, bodyAB),
-                                     aBodyB -> psi.eliminate(futureA, aBodyB));
-        }
-
-        interface Phi<B, R> {
-            <A> R eliminate(Future<A> futureA, Body<Fn1<? super A, ? extends B>> bodyAB);
-        }
-
-        interface Psi<B, R> {
-            <A> R eliminate(Future<A> futureA, Fn1<? super A, ? extends Body<B>> aBodyB);
-        }
-    }
-
-    final RecursiveResult<Progress<?, A>, Future<A>> resumeAsync(Executor executor) {
-        return unwind(this, executor);
+    final Either<Progress<?, A>, Future<A>> resumeAsync(Executor executor) {
+        return leftMost(this)
+            .match(pureA -> right(Future.completed(pureA.value)),
+                   impureA -> right(Future.start(impureA.computation, executor)),
+                   zippedA -> zippedA.eliminate(new Zipped.Phi<Either<Progress<?, A>, Future<A>>, A>() {
+                       @Override
+                       public <Z> Either<Progress<?, A>, Future<A>> eliminate(
+                           Body<Z> bodyZ, Body<Fn1<? super Z, ? extends A>> bodyZA) {
+                           return left(bodyZ.resumeAsync(executor)
+                                           .match(progressZ -> {
+                                                      throw new IllegalStateException("wut");
+                                                  },
+                                                  futureZ -> new Progress<>(futureZ, left(bodyZA))));
+                       }
+                   }),
+                   flatMappedA -> flatMappedA.eliminate(new FlatMapped.Phi<Either<Progress<?, A>, Future<A>>, A>() {
+                       @Override
+                       public <Z> Either<Progress<?, A>, Future<A>> eliminate(
+                           Body<Z> bodyZ, Fn1<? super Z, ? extends Body<A>> zBodyA) {
+                           return left(bodyZ.resumeAsync(executor)
+                                           .match(progressZ -> {
+                                                      throw new IllegalStateException("wut");
+                                                  },
+                                                  futureZ -> new Progress<>(futureZ, right(zBodyA))));
+                       }
+                   }));
     }
 
     final A unsafeRunSync() {
@@ -70,16 +68,13 @@ abstract class Body<A> implements
     final CompletableFuture<A> unsafeRunAsync(Executor executor) {
         return resumeAsync(executor)
             .match(trampoline(progress -> progress.eliminate(AsyncPhis.unwrapProgressPhi(executor),
-                                                             AsyncPhis.unwrapProgressPsi(executor))), id())
+                                                             AsyncPhis.unwrapProgressPsi(executor))),
+                   id())
             .unsafeRun();
     }
 
-    public static void main(String[] args) {
-        ForkJoinPool ex = ForkJoinPool.commonPool();
-        Integer res = times(10, b -> zipped(b, pure(x -> x + 1)), pure(0))
-            .unsafeRunAsync(ex)
-            .join();
-        System.out.println(res);
+    final CompletableFuture<A> unsafeRunAsync() {
+        return unsafeRunAsync(commonPool());
     }
 
     static <A> Body<A> pure(A a) {
@@ -91,7 +86,9 @@ abstract class Body<A> implements
     }
 
     static <A, B> Body<B> zipped(Body<A> body, Body<Fn1<? super A, ? extends B>> bodyFn) {
-        return new Zipped<>(body, bodyFn);
+        return body.projectA()
+            .<Body<B>>zip(bodyFn.projectA().fmap(pureF -> pureA -> pure(pureF.value.apply(pureA.value))))
+            .orElse(new Zipped<>(body, bodyFn));
     }
 
     static <A, B> Body<B> flatMapped(Body<A> body, Fn1<? super A, ? extends Body<B>> bodyFn) {
@@ -128,7 +125,7 @@ abstract class Body<A> implements
 
         @Override
         public String toString() {
-            return "Pure{value=" + (value instanceof Fn1<?, ?> ? "f()" : value) + '}';
+            return "Pure{value=" + value + '}';
         }
     }
 

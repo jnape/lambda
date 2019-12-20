@@ -56,28 +56,18 @@ public class Future<A> implements MonadRec<A, Future<?>> {
         return new Future<>(completedFuture(b));
     }
 
+    @Override
+    public String toString() {
+        return "Future{" +
+            "computation=" + computation +
+            '}';
+    }
+
     public static <A> Future<A> completed(A a) {
         return new Future<>(completedFuture(a));
     }
 
     public static <A> Future<A> start(Fn0<A> fn0, Executor executor) {
         return new Future<>(supplyAsync(fn0.toSupplier(), executor));
-    }
-
-    public static void main(String[] args) {
-        Integer f2 = times(100000, f -> f.zip(new Future<>(completedFuture(x -> x + 1))),
-                           new Future<>(completedFuture(1)))
-            .unsafeRun()
-            .join();
-        System.out.println(f2);
-
-        Integer r = new Future<>(completedFuture(1))
-            .trampolineM(x -> x < 100000
-                ? new Future<>(completedFuture(recurse(x + 1)))
-                : new Future<>(completedFuture(terminate(x))))
-            .unsafeRun()
-            .join();
-
-        System.out.println(r);
     }
 }
