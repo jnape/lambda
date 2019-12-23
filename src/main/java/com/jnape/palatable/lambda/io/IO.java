@@ -4,9 +4,9 @@ import com.jnape.palatable.lambda.adt.Either;
 import com.jnape.palatable.lambda.adt.Try;
 import com.jnape.palatable.lambda.adt.Unit;
 import com.jnape.palatable.lambda.adt.choice.Choice2;
-import com.jnape.palatable.lambda.adt.coproduct.CoProduct4;
 import com.jnape.palatable.lambda.functions.Fn0;
 import com.jnape.palatable.lambda.functions.Fn1;
+import com.jnape.palatable.lambda.functions.Fn2;
 import com.jnape.palatable.lambda.functions.builtin.fn2.LazyRec;
 import com.jnape.palatable.lambda.functions.recursion.RecursiveResult;
 import com.jnape.palatable.lambda.functions.specialized.Pure;
@@ -17,24 +17,21 @@ import com.jnape.palatable.lambda.monad.Monad;
 import com.jnape.palatable.lambda.monad.MonadError;
 import com.jnape.palatable.lambda.monad.MonadRec;
 
+import java.io.IOException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static com.jnape.palatable.lambda.adt.Either.left;
-import static com.jnape.palatable.lambda.adt.Either.right;
 import static com.jnape.palatable.lambda.adt.Unit.UNIT;
 import static com.jnape.palatable.lambda.adt.choice.Choice2.a;
 import static com.jnape.palatable.lambda.adt.choice.Choice2.b;
 import static com.jnape.palatable.lambda.functions.Fn0.fn0;
 import static com.jnape.palatable.lambda.functions.builtin.fn1.Constantly.constantly;
 import static com.jnape.palatable.lambda.functions.builtin.fn1.Downcast.downcast;
-import static com.jnape.palatable.lambda.functions.recursion.RecursiveResult.recurse;
-import static com.jnape.palatable.lambda.functions.recursion.RecursiveResult.terminate;
-import static com.jnape.palatable.lambda.functions.recursion.Trampoline.trampoline;
-import static com.jnape.palatable.lambda.functions.specialized.SideEffect.sideEffect;
+import static com.jnape.palatable.lambda.functions.builtin.fn2.Eq.eq;
 import static com.jnape.palatable.lambda.functor.builtin.Lazy.lazy;
 import static com.jnape.palatable.lambda.monad.Monad.join;
-import static java.lang.System.out;
 import static java.lang.Thread.interrupted;
 import static java.util.concurrent.CompletableFuture.completedFuture;
 import static java.util.concurrent.CompletableFuture.supplyAsync;
@@ -469,8 +466,7 @@ public abstract class IO<A> implements MonadRec<A, IO<?>>, MonadError<Throwable,
         @Override
         @SuppressWarnings("unchecked")
         public CompletableFuture<A> unsafePerformAsyncIO(Executor executor) {
-
-
+            CompletableFuture<Object>       res     = new CompletableFuture<>();
             Lazy<CompletableFuture<Object>> lazyFuture = LazyRec.<IO<?>, CompletableFuture<Object>>lazyRec(
                 (f, io) -> {
                     if (io instanceof IO.Compose<?>) {
@@ -478,13 +474,14 @@ public abstract class IO<A> implements MonadRec<A, IO<?>>, MonadError<Throwable,
                         Lazy<CompletableFuture<Object>> head    = f.apply(compose.source);
                         return compose.composition
                             .match(zip -> head.flatMap(futureX -> f.apply(zip)
-                                       .fmap(futureF -> futureF.thenCombineAsync(
-                                           futureX,
-                                           (f2, x) -> ((Fn1<Object, Object>) f2).apply(x),
-                                           executor))),
-                                   flatMap -> head.fmap(futureX -> futureX
-                                       .thenComposeAsync(x -> f.apply(flatMap.apply(x)).value(),
-                                                         executor)));
+                                       .fmap(futureF -> IO.zip(futureF, futureX,
+                                                               (f2, x) -> ((Fn1<Object, Object>) f2).apply(x),
+                                                               executor, res))),
+                                   flatMap -> head.fmap(futureX -> {
+                                       return IO.flatMap(futureX,
+                                                         x -> f.apply(flatMap.apply(x)).value(),
+                                                         executor, res);
+                                   }));
                     }
                     return lazy(() -> (CompletableFuture<Object>) io.unsafePerformAsyncIO(executor));
                 },
@@ -492,5 +489,91 @@ public abstract class IO<A> implements MonadRec<A, IO<?>>, MonadError<Throwable,
 
             return (CompletableFuture<A>) lazyFuture.value();
         }
+    }
+
+    public static <A, B> IO<B> forever(IO<A> io) {
+        return io.flatMap(__ -> forever(io));
+    }
+
+    public static <A> IO<A> until(Fn1<? super A, ? extends Boolean> pred, IO<A> io) {
+        return io.flatMap(a -> pred.apply(a) ? io(a) : until(pred, io));
+    }
+
+    public static void main(String[] args) throws IOException {
+        AtomicInteger counter = new AtomicInteger();
+
+        System.in.read();
+
+        until(eq(10000000), io(counter::incrementAndGet))
+            .unsafePerformAsyncIO()
+            .join();
+
+        System.out.println("done");
+
+//        forever(io(() -> {
+//            int count = counter.incrementAndGet();
+//            if (count % 100_000 == 0)
+//                System.out.println(Thread.currentThread() + ": " + count);
+//        })).unsafePerformAsyncIO().join()
+//        ;
+    }
+
+    private static <A, B> CompletableFuture<B> fmap(CompletableFuture<A> future, Fn1<? super A, ? extends B> fn) {
+        CompletableFuture<B> res = new CompletableFuture<>();
+
+        future.whenComplete((a, t) -> {
+            if (t == null) {
+                try {
+                    res.complete(fn.apply(a));
+                } catch (Throwable t2) {
+                    res.completeExceptionally(t2);
+                }
+            } else {
+                res.completeExceptionally(t);
+            }
+        });
+
+        return res;
+    }
+
+    private static <A, B> CompletableFuture<B> flatMap(CompletableFuture<A> future, Fn1<? super A, ?
+        extends CompletableFuture<B>> fn, Executor executor, CompletableFuture<B> res) {
+        future.whenCompleteAsync((a, t) -> {
+            if (t == null) {
+                try {
+                    fn.apply(a).whenCompleteAsync((b, t2) -> {
+                        if (t2 == null) {
+                            res.complete(b);
+                        } else {
+                            res.completeExceptionally(t2);
+                        }
+                    }, executor);
+                } catch (Throwable t2) {
+                    res.completeExceptionally(t2);
+                }
+            } else {
+                res.completeExceptionally(t);
+            }
+        }, executor);
+        return res;
+    }
+
+    private static <A, B, C> CompletableFuture<C> zip(CompletableFuture<A> futureA, CompletableFuture<B> futureB,
+                                                      Fn2<? super A, ? super B, ? extends C> fn,
+                                                      Executor executor, CompletableFuture<C> res) {
+        futureA.whenCompleteAsync((a, ta) -> futureB.whenCompleteAsync((b, tb) -> {
+            if (ta != null)
+                res.completeExceptionally(ta);
+            else if (tb != null) {
+                res.completeExceptionally(tb);
+            } else {
+                try {
+                    res.complete(fn.apply(a, b));
+                } catch (Throwable t) {
+                    res.completeExceptionally(t);
+                }
+            }
+        }, executor), executor);
+        return res;
     }
 }
