@@ -5,9 +5,12 @@ import com.jnape.palatable.lambda.functions.Fn1;
 import com.jnape.palatable.lambda.functions.recursion.RecursiveResult;
 
 import java.io.IOException;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ForkJoinPool;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Queue;
+import java.util.concurrent.*;
 
+import static com.jnape.palatable.lambda.adt.Unit.UNIT;
 import static com.jnape.palatable.lambda.functions.builtin.fn1.Id.id;
 import static com.jnape.palatable.lambda.functions.builtin.fn3.Times.times;
 import static com.jnape.palatable.lambda.functions.recursion.RecursiveResult.recurse;
@@ -65,104 +68,52 @@ public class Unwind {
             unoptimizedBodyA);
     }
 
+    private static final Queue<CompletableFuture<?>> futures = new LinkedBlockingQueue<>(100_000);
+
     public static <A, B> CompletableFuture<B> flatMap(CompletableFuture<A> futureA,
                                                       Fn1<? super A, ? extends CompletableFuture<B>> fn,
-                                                      CompletableFuture<B> ref) {
+                                                      Executor ex) {
+        CompletableFuture<B> ref = new CompletableFuture<>();
+        futures.add(ref);
+
         futureA.thenCompose(fn.toFunction())
             .whenComplete((res, t) -> {
-            if (t == null) {
-                ref.complete(res);
-            } else {
-                ref.completeExceptionally(t);
-            }
-        });
+                if (t == null) {
+                    ref.complete(res);
+                } else {
+                    ref.completeExceptionally(t);
+                }
+            });
         return ref;
     }
 
-    public static CompletableFuture<Integer> manyTimesWithFlatMap(int x) {
-        return flatMap(supplyAsync(() -> {
-            if (x % 1_000_000 == 0)
+    public static CompletableFuture<Integer> manyTimesWithFlatMap(int x, Executor ex) {
+        CompletableFuture<Integer> source = supplyAsync(() -> {
+            if (x % 1_000 == 0)
                 System.out.println(Thread.currentThread() + " : " + x);
 
-            return x + 1;
-        }), y -> {
-            if (y > 100_000_000)
-                return completedFuture(y);
-
-            return manyTimesWithFlatMap(y + 1);
-        }, new CompletableFuture<>());
-    }
-
-    public static CompletableFuture<Integer> manyTimesWithFlatMap(int x, CompletableFuture<Integer> ref) {
-        return flatMap(supplyAsync(() -> {
-            if (x % 1_000_000 == 0)
-                System.out.println(Thread.currentThread() + " : " + x);
-
-            return x + 1;
-        }), y -> {
-            if (y > 100_000_000)
-                return completedFuture(y);
-
-            return manyTimesWithFlatMap(y + 1, ref);
-        }, new CompletableFuture<>());
-    }
-
-    public static CompletableFuture<Integer> manyTimes(int x) {
-        return manyTimes(x, new CompletableFuture<>());
-    }
-
-    public static CompletableFuture<Integer> manyTimes(int x, CompletableFuture<Integer> nextRef) {
-        supplyAsync(() -> {
-            if (x % 1_000_000 == 0)
-                System.out.println(Thread.currentThread() + " : " + x);
-
-            if (x > 100_000_000) {
-                nextRef.complete(x);
-            } else {
-                manyTimes(x + 1, nextRef);
-            }
-            return null;
+            return x;
         });
-        return nextRef;
+        Fn1<Integer, CompletableFuture<Integer>> fn = y -> y > 50000
+            ? completedFuture(y)
+            : manyTimesWithFlatMap(y + 1, ex);
+        return flatMap(source, fn, ex);
     }
 
-    public static IO<Integer> manyTimesIO(int x) {
-        return io(() -> {
-            if (x > 10_000_000)
-                return io(x);
 
-            return manyTimesIO(x + 1);
-        }).flatMap(id());
-    }
+    public static void main(String[] args) throws InterruptedException {
 
-    public static void main(String[] args) throws IOException {
-        System.in.read();
-        manyTimesWithFlatMap(1).join();
-//        manyTimesIO(1).unsafePerformIO();
-    }
-
-    public static void main2(String[] args) {
-
-        ForkJoinPool executor = commonPool();
-
-        Body<Integer> bodyX = impure(() -> 1);
-        Body<Fn1<? super Integer, ? extends Integer>> bodyF = impure(() -> {
-//            System.out.println("f");
-//            Thread.sleep(1000);
-            return x -> x + 1;
-        });
-
-        Body<Integer> bodyInt = times(10000, b -> zipped(b, bodyF), bodyX);
-
-//        leftMost(bodyInt)
-
-        Either<Progress<?, Integer>, Future<Integer>> resumed = bodyInt.resumeAsync(executor);
-
-
-        Integer res = bodyInt.unsafeRunAsync(executor).join();
-
-
-        System.out.println(res);
+        CountDownLatch oneShot = new CountDownLatch(1);
+        ForkJoinPool   ex      = commonPool();
+        flatMap(manyTimesWithFlatMap(1, ex), __ -> supplyAsync(() -> {
+            oneShot.countDown();
+            return UNIT;
+        }), ex).join();
+//        if (!oneShot.await(1000, TimeUnit.MILLISECONDS))
+//            System.out.println("stack overflow");
+//        else
+            System.out.println("got here");
 
     }
+
 }
