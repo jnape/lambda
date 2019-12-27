@@ -1,23 +1,16 @@
 package com.jnape.palatable.lambda.io;
 
-import com.jnape.palatable.lambda.adt.Either;
 import com.jnape.palatable.lambda.functions.Fn1;
 import com.jnape.palatable.lambda.functions.recursion.RecursiveResult;
 
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Queue;
 import java.util.concurrent.*;
 
 import static com.jnape.palatable.lambda.adt.Unit.UNIT;
-import static com.jnape.palatable.lambda.functions.builtin.fn1.Id.id;
-import static com.jnape.palatable.lambda.functions.builtin.fn3.Times.times;
 import static com.jnape.palatable.lambda.functions.recursion.RecursiveResult.recurse;
 import static com.jnape.palatable.lambda.functions.recursion.RecursiveResult.terminate;
 import static com.jnape.palatable.lambda.functions.recursion.Trampoline.trampoline;
 import static com.jnape.palatable.lambda.io.Body.*;
-import static com.jnape.palatable.lambda.io.IO.io;
 import static java.util.concurrent.CompletableFuture.completedFuture;
 import static java.util.concurrent.CompletableFuture.supplyAsync;
 import static java.util.concurrent.ForkJoinPool.commonPool;
@@ -68,52 +61,5 @@ public class Unwind {
             unoptimizedBodyA);
     }
 
-    private static final Queue<CompletableFuture<?>> futures = new LinkedBlockingQueue<>(100_000);
-
-    public static <A, B> CompletableFuture<B> flatMap(CompletableFuture<A> futureA,
-                                                      Fn1<? super A, ? extends CompletableFuture<B>> fn,
-                                                      Executor ex) {
-        CompletableFuture<B> ref = new CompletableFuture<>();
-        futures.add(ref);
-
-        futureA.thenCompose(fn.toFunction())
-            .whenComplete((res, t) -> {
-                if (t == null) {
-                    ref.complete(res);
-                } else {
-                    ref.completeExceptionally(t);
-                }
-            });
-        return ref;
-    }
-
-    public static CompletableFuture<Integer> manyTimesWithFlatMap(int x, Executor ex) {
-        CompletableFuture<Integer> source = supplyAsync(() -> {
-            if (x % 1_000 == 0)
-                System.out.println(Thread.currentThread() + " : " + x);
-
-            return x;
-        });
-        Fn1<Integer, CompletableFuture<Integer>> fn = y -> y > 50000
-            ? completedFuture(y)
-            : manyTimesWithFlatMap(y + 1, ex);
-        return flatMap(source, fn, ex);
-    }
-
-
-    public static void main(String[] args) throws InterruptedException {
-
-        CountDownLatch oneShot = new CountDownLatch(1);
-        ForkJoinPool   ex      = commonPool();
-        flatMap(manyTimesWithFlatMap(1, ex), __ -> supplyAsync(() -> {
-            oneShot.countDown();
-            return UNIT;
-        }), ex).join();
-//        if (!oneShot.await(1000, TimeUnit.MILLISECONDS))
-//            System.out.println("stack overflow");
-//        else
-            System.out.println("got here");
-
-    }
 
 }
